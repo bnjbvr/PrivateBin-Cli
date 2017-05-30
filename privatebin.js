@@ -15,16 +15,9 @@
 
 'use strict';
 
-// enforce presence of one argument
-if (!process.argv[2])
-{
-    console.error('Usage: ./privatebin.js <path to text file> [optional password] [optional PrivateBin FQDN]');
-    process.exit(1);
-}
-
 global.sjcl = require('./sjcl-1.0.6');
-var password = process.argv[3] || '',
-    privatebinHost = process.argv[4] || 'privatebin.net',
+var password = process.argv[2] || '',
+    privatebinHost = process.argv[3] || 'colle.delire.party',
     privatebinProtocol = 'https',
     privatebinPort = 443,
     privatebinPath = '/',
@@ -167,12 +160,15 @@ var controller = {
     }
 };
 
-// try to open file for reading, naively loading it all into memory
-fs.readFile(process.argv[2], function (err, data) {
-    if (err) {
-        console.error(err.toString());
-        process.exit(2);
+var data = '';
+process.stdin.on('readable', function() {
+    var chunk = process.stdin.read();
+    if (chunk !== null) {
+        data += chunk.toString();
     }
+});
+
+process.stdin.on('end', function() {
     console.log('Sending content of file "' + process.argv[2] + '"…');
     controller.sendData(data.toString());
 });
