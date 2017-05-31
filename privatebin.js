@@ -29,7 +29,7 @@ var fs = require('fs');
 var querystring = require('querystring');
 var http = require(privatebinProtocol);
 
-var sjcl = require('./vendor/sjcl-1.0.6');
+var sjcl = require('sjcl');
 var RawDeflate = require('./vendor/rawdeflate-0.5').RawDeflate;
 
 function cipher(key, password, message)
