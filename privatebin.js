@@ -15,7 +15,6 @@
 
 'use strict';
 
-global.sjcl = require('./sjcl-1.0.6');
 var password = process.argv[2] || '',
     privatebinHost = process.argv[3] || 'colle.delire.party',
     privatebinProtocol = 'https',
@@ -24,141 +23,112 @@ var password = process.argv[2] || '',
     expiration = 'never',
     format = 'plaintext',
     burnafterreading = 1,
-    opendiscussion = 0,
-    fs = require('fs'),
-    querystring = require('querystring'),
-    http = require(privatebinProtocol),
-    base64env = require('./base64-2.1.9'),
-    rawenv = require('./rawdeflate-0.5'),
-    Base64 = base64env.Base64,
-    RawDeflate = rawenv.RawDeflate;
+    opendiscussion = 0;
 
-/**
- * filter methods
- *
- * @name filter
- * @class
- */
-var filter = {
-    /**
-     * compress a message (deflate compression), returns base64 encoded data
-     *
-     * @name   filter.compress
-     * @function
-     * @param  {string} message
-     * @return {string} base64 data
-     */
-    compress: function(message)
-    {
-        return Base64.toBase64( RawDeflate.deflate( Base64.utob(message) ) );
-    },
+var fs = require('fs');
+var querystring = require('querystring');
+var http = require(privatebinProtocol);
 
-    /**
-     * compress, then encrypt message with given key and password
-     *
-     * @name   filter.cipher
-     * @function
-     * @param  {string} key
-     * @param  {string} password
-     * @param  {string} message
-     * @return {string} data - JSON with encrypted data
-     */
-    cipher: function(key, password, message)
-    {
-        // Galois Counter Mode, keysize 256 bit, authentication tag 128 bit
-        var options = {mode: 'gcm', ks: 256, ts: 128};
-        if ((password || '').trim().length === 0)
-        {
-            return sjcl.encrypt(key, this.compress(message), options);
-        }
-        return sjcl.encrypt(key + sjcl.codec.hex.fromBits(sjcl.hash.sha256.hash(password)), this.compress(message), options);
+var sjcl = require('./vendor/sjcl-1.0.6');
+var RawDeflate = require('./vendor/rawdeflate-0.5').RawDeflate;
+
+function cipher(key, password, message)
+{
+    // Galois Counter Mode, keysize 256 bit, authentication tag 128 bit
+    var options = {mode: 'gcm', ks: 256, ts: 128};
+
+    var b64 = new Buffer(RawDeflate.deflate(message)).toString('base64');
+
+    var actualKey = ((password || '').trim().length === 0)
+                    ? key
+                    : key + sjcl.codec.hex.fromBits(sjcl.hash.sha256.hash(password));
+
+    return sjcl.encrypt(actualKey, b64, options);
+}
+
+function sendData(data) {
+    if (data.length === 0) {
+        console.warn("Nothing to send, early exit.");
+        return;
     }
-};
 
-/**
- * PrivateBin logic
- *
- * @name controller
- * @class
- */
-var controller = {
-    /**
-     * send a new paste to server
-     *
-     * @name   controller.sendData
-     * @function
-     * @param  {String} data
-     */
-    sendData: function(data)
-    {
-        // do not send if no data.
-        if (data.length === 0)
-        {
-            return;
+    var randomkey = sjcl.codec.base64.fromBits(sjcl.random.randomWords(8, 0), 0);
+
+    var cipherdata = cipher(randomkey, password, data);
+
+    var postData = querystring.stringify({
+        data:             cipherdata,
+        expire:           expiration,
+        formatter:        format,
+        burnafterreading: burnafterreading,
+        opendiscussion:   opendiscussion
+    });
+
+    var options = {
+        host: privatebinHost,
+        port: privatebinPort,
+        path: privatebinPath,
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Content-Length': Buffer.byteLength(postData),
+            'X-Requested-With': 'JSONHttpRequest'
         }
+    };
 
-        var randomkey = sjcl.codec.base64.fromBits(sjcl.random.randomWords(8, 0), 0),
-            cipherdata = filter.cipher(randomkey, password, data),
-            data_to_send = querystring.stringify({
-                data:             cipherdata,
-                expire:           expiration,
-                formatter:        format,
-                burnafterreading: burnafterreading,
-                opendiscussion:   opendiscussion
-            }),
-            options = {
-                host: privatebinHost,
-                port: privatebinPort,
-                path: privatebinPath,
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'Content-Length': Buffer.byteLength(data_to_send),
-                    'X-Requested-With': 'JSONHttpRequest'
-                }
-            },
-            request = http.request(options, function(res) {
-                var responseString = '';
-                res.setEncoding('utf8');
-                res.on('data', function (data) {
-                    responseString += data;
-                });
-                res.on('end', function () {
-                    var response = JSON.parse(responseString);
-                    if (response.status === 0) {
-                        var privatebinUrl = privatebinProtocol + '://' + privatebinHost + privatebinPath,
-                            url = privatebinUrl + '?' + response.id + '#' + randomkey,
-                            deleteUrl = privatebinUrl + '?pasteid=' + response.id + '&deletetoken=' + response.deletetoken;
+    var request = http.request(options, function(res) {
+        res.setEncoding('utf8');
 
-                        console.log('Your private paste URL is: ' + url);
-                        if (burnafterreading == 0)
-                        {
-                            console.log('Your delete URL is: ' + deleteUrl);
-                        }
-                        process.exit(0);
-                    }
-                    else if (response.status === 1)
-                    {
-                        console.error('Could not create paste: ' + response.message);
-                        process.exit(3);
-                    }
-                    else
-                    {
-                        console.error('Could not create paste: unknown status');
-                        process.exit(4);
-                    }
-                });
-            });
-
-        request.on('error', function (error) {
-            console.error('Could not create paste: ' + error.message);
-            process.exit(5);
+        var responseString = '';
+        res.on('data', function (data) {
+            responseString += data;
         });
 
-        request.write(data_to_send);
-        request.end();
-    }
-};
+        res.on('end', function () {
+            var response = JSON.parse(responseString);
+            if (response.status !== 0) {
+                if (response.status === 1) {
+                    console.error('Could not create paste: ' + response.message);
+                } else {
+                    console.error('Could not create paste: unknown status: ' + response.status);
+                }
+                process.exit(1);
+            }
+
+            var port = '';
+            if ((privatebinProtocol === 'http' && privatebinPort !== 80) ||
+                (privatebinProtocol === 'https' && privatebinPort !== 443)) {
+                port += ':' + privatebinPort;
+            }
+
+            var privatebinUrl = privatebinProtocol
+                                + '://'
+                                + privatebinHost
+                                + port
+                                + privatebinPath;
+
+            var url = privatebinUrl + '?' + response.id + '#' + randomkey;
+            console.log('Your private paste URL is: ' + url);
+
+            if (burnafterreading == 0) {
+                var deleteUrl = privatebinUrl
+                                + '?pasteid='
+                                + response.id
+                                + '&deletetoken='
+                                + response.deletetoken;
+                console.log('Your delete URL is: ' + deleteUrl);
+            }
+        });
+    });
+
+    request.on('error', function (error) {
+        console.error('Could not create paste: ' + error.message);
+        process.exit(5);
+    });
+
+    request.write(postData);
+    request.end();
+}
 
 var data = '';
 process.stdin.on('readable', function() {
@@ -169,6 +139,6 @@ process.stdin.on('readable', function() {
 });
 
 process.stdin.on('end', function() {
-    console.log('Sending content of file "' + process.argv[2] + '"…');
-    controller.sendData(data.toString());
+    console.log('Sending content of stdout...');
+    sendData(data.toString());
 });
